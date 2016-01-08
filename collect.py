@@ -5,76 +5,139 @@ import os
 import mimetypes
 from datetime import *
 import sys
-
-import pymongo
 import exifread
-import struct
-import imghdr
-import jpeg
+# import struct
+# import imghdr
+# import jpeg
+import sqlite3
+import logging
+from exif import gps
 
 EXIF_DATE_TIME_ORIGINAL = 'EXIF DateTimeOriginal'
 
+epoch = datetime(1970, 1, 1)
 
-def do_jpeg(source_path, db):
-    with open(source_path, 'rb') as fh:
+
+def process_jpeg(database, file_path, relative_path):
+    """
+    Process JPEG file
+
+    :param database:
+    :type database: sqlite3.Connection
+    :param file_path: Path to JPEG file
+    :type file_path: str
+    :param relative_path:
+    :type relative_path: str
+    :return:
+    :rtype: bool
+    """
+    global epoch
+
+    with open(file_path, 'rb') as fh:
+
+        statinfo = os.stat(file_path)
 
         try:
-            exif_raw = exifread.process_file(fh)
+            tags = exifread.process_file(fh)
         except UnicodeEncodeError, e:
             return False
 
-        if EXIF_DATE_TIME_ORIGINAL in exif_raw:
-            try:
-                mtime = datetime.strptime(str(exif_raw[EXIF_DATE_TIME_ORIGINAL]), '%Y:%m:%d %H:%M:%S')
-            except ValueError, e:
-                mtime = datetime.fromtimestamp(os.path.getmtime(source_path))
+        # for tag in tags.keys():
+        #     if tag not in ('JPEGThumbnail', 'TIFFThumbnail', 'Filename', 'EXIF MakerNote'):
+        #         print tag, tags[tag]
+
+        try:
+            if EXIF_DATE_TIME_ORIGINAL not in tags:
+                raise ValueError
+            mtime = datetime.strptime(str(tags[EXIF_DATE_TIME_ORIGINAL]), '%Y:%m:%d %H:%M:%S')
+        except ValueError, e:
+            mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+
+        lat, lon = gps.get_lat_lon(tags)
+
+        sql = 'INSERT INTO photos' \
+              + ' (path, dt, size, lat, lon)' \
+              + ' VALUES ("%s", %d, %d, %s, %s)' % (relative_path,
+                                                    (mtime - epoch).total_seconds(),
+                                                    statinfo.st_size,
+                                                    str(lat) if lat else '"NULL"',
+                                                    str(lon) if lon else '"NULL"')
+
+        try:
+            database.execute(sql)
+            database.commit()
+        except sqlite3.IntegrityError as e:
+            return False
+
+    return True
+
+
+def split_path(path):
+    """
+    Split path into a list
+    :param path: path
+    :type path: str
+    :return: path parts
+    :rtype: list
+    """
+    dirname = path
+    path_parts = []
+    while True:
+        dirname, leaf = os.path.split(dirname)
+        if (leaf):
+            path_parts = [leaf] + path_parts  # Adds one element, at the beginning of the list
         else:
-            mtime = datetime.fromtimestamp(os.path.getmtime(source_path))
+            # Uncomment the following line to have also the drive, in the format "Z:\"
+            # path_split = [dirname] + path_split
+            break;
+    return path_parts
 
-        exif = {}
-        for k, v in exif_raw.iteritems():
-            exif[k] = str(v)
 
-        photo = {
-            'path': source_path,
-            'date': mtime,
-            'exif': exif,
-        }
-
-        print photo
-        exit()
-
-        photos = db.photos
-        photos.insert_one(photo)
-
-        sys.stdout.write('.')
-        sys.stdout.flush()
+def is_dir_hidden(path):
+    relative_dir = split_path(path)
+    for dirname in relative_dir:
+        if dirname[0] == '.':
+            return True
+    return False
 
 
 if __name__ == "__main__":
+
     # parse command line
     parser = argparse.ArgumentParser(description='Collect photos')
+    parser.add_argument('directory', help='Directory with photos', type=str)
     args = parser.parse_args()
 
-    client = pymongo.MongoClient('localhost', 27017)
+    source_dir = args.directory
 
-    db = client.photos
+    database = sqlite3.connect(os.path.join(source_dir, 'data', 'photos.db'))
 
-    source_dir = '/Users/snakeye/Pictures/Photos'
-
-    skip_files = '.DS_Store'
+    skip_files = ['.DS_Store']
 
     for subdir, dirs, files in os.walk(source_dir):
+
+        if is_dir_hidden(os.path.relpath(subdir, source_dir)):
+            continue
+
         for file in files:
 
             if file in skip_files:
                 continue
 
-            source_file = os.path.join(subdir, file)
+            full_path = os.path.join(subdir, file)
+            relative_path = os.path.relpath(full_path, source_dir)
 
-            (mime_type, encoding) = mimetypes.guess_type(source_file)
+            (mime_type, encoding) = mimetypes.guess_type(full_path)
 
             if mime_type == 'image/jpeg':
-                do_jpeg(source_file, db)
+                process_jpeg(database, full_path, relative_path)
             else:
-                print "{} unknown mime type: {}".format(source_file, mime_type)
+                #logging.warning("%s unknown mime type: %s" % (relative_path, mime_type))
+                pass
+
+            sys.stdout.write('.')
+            sys.stdout.flush()
+
+    print
+
+    database.close()
