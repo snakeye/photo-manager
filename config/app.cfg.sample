@@ -1,0 +1,11 @@
+[app]
+
+[directories]
+log=log
+unsorted=test/unsorted
+photos=test/photos
+gif=test/gif
+video=test/video
+
+[database]
+file=%(photos)s/photos.db

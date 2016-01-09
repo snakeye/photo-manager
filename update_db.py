@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 __author__ = 'snakeye'
 
 import argparse
@@ -6,16 +8,13 @@ import mimetypes
 from datetime import *
 import sys
 import exifread
-# import struct
-# import imghdr
-# import jpeg
 import sqlite3
+from lib import image, app, db, util
 import logging
-from exif import gps
 
 EXIF_DATE_TIME_ORIGINAL = 'EXIF DateTimeOriginal'
 
-epoch = datetime(1970, 1, 1)
+unix_epoch = datetime(1970, 1, 1)
 
 
 def process_jpeg(database, file_path, relative_path):
@@ -31,7 +30,7 @@ def process_jpeg(database, file_path, relative_path):
     :return:
     :rtype: bool
     """
-    global epoch
+    global unix_epoch
 
     with open(file_path, 'rb') as fh:
 
@@ -42,10 +41,6 @@ def process_jpeg(database, file_path, relative_path):
         except UnicodeEncodeError, e:
             return False
 
-        # for tag in tags.keys():
-        #     if tag not in ('JPEGThumbnail', 'TIFFThumbnail', 'Filename', 'EXIF MakerNote'):
-        #         print tag, tags[tag]
-
         try:
             if EXIF_DATE_TIME_ORIGINAL not in tags:
                 raise ValueError
@@ -53,12 +48,12 @@ def process_jpeg(database, file_path, relative_path):
         except ValueError, e:
             mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
 
-        lat, lon = gps.get_lat_lon(tags)
+        lat, lon = image.get_exif_location(tags)
 
         sql = 'INSERT INTO photos' \
               + ' (path, dt, size, lat, lon)' \
               + ' VALUES ("%s", %d, %d, %s, %s)' % (relative_path,
-                                                    (mtime - epoch).total_seconds(),
+                                                    (mtime - unix_epoch).total_seconds(),
                                                     statinfo.st_size,
                                                     str(lat) if lat else 'NULL',
                                                     str(lon) if lon else 'NULL')
@@ -72,51 +67,31 @@ def process_jpeg(database, file_path, relative_path):
     return True
 
 
-def split_path(path):
-    """
-    Split path into a list
-    :param path: path
-    :type path: str
-    :return: path parts
-    :rtype: list
-    """
-    dirname = path
-    path_parts = []
-    while True:
-        dirname, leaf = os.path.split(dirname)
-        if (leaf):
-            path_parts = [leaf] + path_parts  # Adds one element, at the beginning of the list
-        else:
-            # Uncomment the following line to have also the drive, in the format "Z:\"
-            # path_split = [dirname] + path_split
-            break;
-    return path_parts
-
-
-def is_dir_hidden(path):
-    relative_dir = split_path(path)
-    for dirname in relative_dir:
-        if dirname[0] == '.':
-            return True
-    return False
-
-
 if __name__ == "__main__":
 
+    # load application config
+    app.load_config()
+
+    # init logger
+    app.init_logger('update_db')
+
     # parse command line
-    parser = argparse.ArgumentParser(description='Collect photos')
-    parser.add_argument('directory', help='Directory with photos', type=str)
+    parser = argparse.ArgumentParser(description='Update photo database')
+    parser.add_argument('archive', help='Directory with photo archive', type=str, nargs='?',
+                        default=app.config.get('photos', 'archive_dir'))
+    parser.add_argument('-d', '--database', help='Directory with photos database', type=str,
+                        default=app.config.get('photos', 'database_dir'))
     args = parser.parse_args()
 
-    source_dir = args.directory
+    source_dir = args.archive
+    database_dir = args.database
 
-    database = sqlite3.connect(os.path.join(source_dir, 'data', 'photos.db'))
+    database = db.init(database_dir)
 
     skip_files = ['.DS_Store']
 
     for subdir, dirs, files in os.walk(source_dir):
-
-        if is_dir_hidden(os.path.relpath(subdir, source_dir)):
+        if util.is_dir_hidden(os.path.relpath(subdir, source_dir)):
             continue
 
         for file in files:
@@ -132,8 +107,7 @@ if __name__ == "__main__":
             if mime_type == 'image/jpeg':
                 process_jpeg(database, full_path, relative_path)
             else:
-                #logging.warning("%s unknown mime type: %s" % (relative_path, mime_type))
-                pass
+                logging.warning("%s unknown mime type: %s" % (relative_path, mime_type))
 
             sys.stdout.write('.')
             sys.stdout.flush()
