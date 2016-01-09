@@ -60,8 +60,8 @@ def process_jpeg(database, file_path, relative_path):
               + ' VALUES ("%s", %d, %d, %s, %s)' % (relative_path,
                                                     (mtime - epoch).total_seconds(),
                                                     statinfo.st_size,
-                                                    str(lat) if lat else '"NULL"',
-                                                    str(lon) if lon else '"NULL"')
+                                                    str(lat) if lat else 'NULL',
+                                                    str(lon) if lon else 'NULL')
 
         try:
             database.execute(sql)
