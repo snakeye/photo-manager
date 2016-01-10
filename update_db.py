@@ -94,12 +94,15 @@ if __name__ == "__main__":
     database = db.init(database_file)
 
     # 1. check for deleted files
+    print 'Check for deleted files'
+
     cursor = db.fetch('SELECT id, path FROM photos')
     for row in cursor.fetchall():
         if not os.path.exists(os.path.join(source_dir, row[1])):
             db.get_conn().execute('DELETE FROM photos WHERE id = ?', row[0])
-
-        sys.stdout.write('.')
+            sys.stdout.write('X')
+        else:
+            sys.stdout.write('.')
         sys.stdout.flush()
 
     print
@@ -107,6 +110,8 @@ if __name__ == "__main__":
     db.get_conn().commit()
 
     # 2. add new files
+    print 'Add new files'
+
     skip_files = ['.DS_Store']
     image_types = ['image/jpeg', 'image/raw']
 
@@ -131,8 +136,9 @@ if __name__ == "__main__":
 
                 if mime_type in image_types:
                     process_photo(database, full_path, relative_path, mime_type)
-
-                sys.stdout.write('+')
+                    sys.stdout.write('+')
+                else:
+                    sys.stdout.write(' ')
             else:
                 sys.stdout.write('.')
 
