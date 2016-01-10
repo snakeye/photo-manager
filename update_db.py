@@ -17,7 +17,7 @@ EXIF_DATE_TIME_ORIGINAL = 'EXIF DateTimeOriginal'
 unix_epoch = datetime(1970, 1, 1)
 
 
-def process_jpeg(database, file_path, relative_path):
+def process_photo(database, file_path, relative_path, mime_type):
     """
     Process JPEG file
 
@@ -36,27 +36,30 @@ def process_jpeg(database, file_path, relative_path):
 
         statinfo = os.stat(file_path)
 
-        try:
-            tags = exifread.process_file(fh)
-        except UnicodeEncodeError, e:
-            return False
+        tags = image.get_exif(file_path)
 
-        try:
-            if EXIF_DATE_TIME_ORIGINAL not in tags:
-                raise ValueError
-            mtime = datetime.strptime(str(tags[EXIF_DATE_TIME_ORIGINAL]), '%Y:%m:%d %H:%M:%S')
-        except ValueError, e:
-            mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+        mtime = image.get_original_timestamp(file_path)
 
         lat, lon = image.get_exif_location(tags)
 
+        try:
+            width = int(str(tags['EXIF ExifImageWidth']))
+            height = int(str(tags['EXIF ExifImageLength']))
+        except:
+            width = 0
+            height = 0
+
         sql = 'INSERT INTO photos' \
-              + ' (path, dt, size, lat, lon)' \
-              + ' VALUES ("%s", %d, %d, %s, %s)' % (relative_path,
-                                                    (mtime - unix_epoch).total_seconds(),
-                                                    statinfo.st_size,
-                                                    str(lat) if lat else 'NULL',
-                                                    str(lon) if lon else 'NULL')
+              + ' (path, dt, size, lat, lon, width, height, mime)' \
+              + ' VALUES ("%s", %d, %d, %s, %s, %d, %d, "%s")' \
+                % (relative_path,
+                   (mtime - unix_epoch).total_seconds(),
+                   statinfo.st_size,
+                   str(lat) if lat else 'NULL',
+                   str(lon) if lon else 'NULL',
+                   width,
+                   height,
+                   mime_type)
 
         try:
             database.execute(sql)
@@ -77,39 +80,62 @@ if __name__ == "__main__":
 
     # parse command line
     parser = argparse.ArgumentParser(description='Update photo database')
-    parser.add_argument('archive', help='Directory with photo archive', type=str, nargs='?',
-                        default=app.config.get('photos', 'archive_dir'))
-    parser.add_argument('-d', '--database', help='Directory with photos database', type=str,
-                        default=app.config.get('photos', 'database_dir'))
     args = parser.parse_args()
 
-    source_dir = args.archive
-    database_dir = args.database
+    mimetypes.init()
 
-    database = db.init(database_dir)
+    # add mime type for raw images
+    mimetypes.add_type('image/raw', '.CR2')
 
+    # directories
+    source_dir = app.config.get('directories', 'photos')
+    database_file = app.config.get('database', 'file')
+
+    database = db.init(database_file)
+
+    # 1. check for deleted files
+    cursor = db.fetch('SELECT id, path FROM photos')
+    for row in cursor.fetchall():
+        if not os.path.exists(os.path.join(source_dir, row[1])):
+            db.get_conn().execute('DELETE FROM photos WHERE id = ?', row[0])
+
+        sys.stdout.write('.')
+        sys.stdout.flush()
+
+    print
+
+    db.get_conn().commit()
+
+    # 2. add new files
     skip_files = ['.DS_Store']
+    image_types = ['image/jpeg', 'image/raw']
 
     for subdir, dirs, files in os.walk(source_dir):
         if util.is_dir_hidden(os.path.relpath(subdir, source_dir)):
             continue
 
         for file in files:
-
             if file in skip_files:
                 continue
 
+            #
             full_path = os.path.join(subdir, file)
             relative_path = os.path.relpath(full_path, source_dir)
 
-            (mime_type, encoding) = mimetypes.guess_type(full_path)
+            cursor = db.fetch('SELECT * FROM photos WHERE path = "%s"' % relative_path)
+            row = cursor.fetchone()
 
-            if mime_type == 'image/jpeg':
-                process_jpeg(database, full_path, relative_path)
+            if row == None:
+                #
+                (mime_type, encoding) = mimetypes.guess_type(full_path)
+
+                if mime_type in image_types:
+                    process_photo(database, full_path, relative_path, mime_type)
+
+                sys.stdout.write('+')
             else:
-                logging.warning("%s unknown mime type: %s" % (relative_path, mime_type))
+                sys.stdout.write('.')
 
-            sys.stdout.write('.')
             sys.stdout.flush()
 
     print
